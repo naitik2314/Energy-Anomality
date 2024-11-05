@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
 # Parameters for synthetic data generation
-num_meters = 125
+num_meters = 250  # Number of meters
 num_days = 5 * 365  # 5 years of data
 sampling_rate = 15  # in minutes
 anomaly_percentage = 0.25  # 25% anomalies
@@ -32,7 +32,7 @@ for meter_id in range(1, num_meters + 1):
     data[f'meter_{meter_id}'] = baseline_consumption
 
 # Function to inject anomalies
-def inject_anomalies(data, anomaly_percentage, spike_factor=3, dip_factor=0.3, prolonged_anomaly_duration=12):
+def inject_anomalies(data, anomaly_percentage, spike_factor=3, dip_factor=0.3, prolonged_anomaly_duration=4):
     num_anomalies = int(len(data) * anomaly_percentage)
     anomaly_indices = np.random.choice(data.index, size=num_anomalies, replace=False)
     
@@ -93,34 +93,35 @@ model = Sequential([
     TimeDistributed(Dense(X.shape[2]))
 ])
 
-model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mae')
 
+# Early stopping and model checkpointing
 early_stopping = EarlyStopping(
     monitor='val_loss', 
-    patience=5,  # Number of epochs to wait before stopping if no improvement
-    restore_best_weights=True  # Restore model weights from the epoch with the best validation loss
+    patience=5, 
+    restore_best_weights=True
 )
 
 checkpoint = ModelCheckpoint(
-    filepath='best_model.h5',  # Path to save the best model
+    filepath='best_model.h5', 
     monitor='val_loss', 
     save_best_only=True, 
     verbose=1
 )
 
-# Train the model
+# Model training with callbacks
 history = model.fit(
     X_train, X_train,
-    epochs=50,  # Adjust as needed
+    epochs=50, 
     batch_size=128,
     validation_data=(X_val, X_val),
     callbacks=[early_stopping, checkpoint]
 )
 
-# Set threshold for anomaly detection based on the 90th percentile
+# Set threshold for anomaly detection based on training loss
 X_train_pred = model.predict(X_train)
 train_mae_loss = np.mean(np.abs(X_train_pred - X_train), axis=(1, 2))
-threshold = np.percentile(train_mae_loss, 90)
+threshold = np.percentile(train_mae_loss, 95)
 
 # Evaluate on test set
 X_test_pred = model.predict(X_test)
