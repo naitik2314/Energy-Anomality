@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
 # Parameters for synthetic data generation
-num_meters = 50
+num_meters = 125
 num_days = 5 * 365  # 5 years of data
 sampling_rate = 15  # in minutes
 anomaly_percentage = 0.25  # 25% anomalies
@@ -83,17 +83,13 @@ X_test, y_test = X[train_size + val_size:], y[train_size + val_size:]
 
 # LSTM Autoencoder Model
 model = Sequential([
-    LSTM(128, activation='relu', input_shape=(seq_length, X.shape[2]), return_sequences=True),
-    Dropout(0.2),
-    LSTM(64, activation='relu', return_sequences=True),
+    LSTM(64, activation='relu', input_shape=(seq_length, X.shape[2]), return_sequences=True),
     Dropout(0.2),
     LSTM(32, activation='relu', return_sequences=False),
     RepeatVector(seq_length),
     LSTM(32, activation='relu', return_sequences=True),
     Dropout(0.2),
     LSTM(64, activation='relu', return_sequences=True),
-    Dropout(0.2),
-    LSTM(128, activation='relu', return_sequences=True),
     TimeDistributed(Dense(X.shape[2]))
 ])
 
@@ -121,10 +117,10 @@ history = model.fit(
     callbacks=[early_stopping, checkpoint]
 )
 
-# Set threshold for anomaly detection
+# Set threshold for anomaly detection based on the 90th percentile
 X_train_pred = model.predict(X_train)
 train_mae_loss = np.mean(np.abs(X_train_pred - X_train), axis=(1, 2))
-threshold = np.percentile(train_mae_loss, 85)
+threshold = np.percentile(train_mae_loss, 90)
 
 # Evaluate on test set
 X_test_pred = model.predict(X_test)
