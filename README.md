@@ -18,3 +18,20 @@ Test Set Classification Report:
     accuracy                           0.65     26274
     macro avg       0.50      0.50      0.41     26274
     weighted avg       0.55      0.65      0.53     26274
+
+group2_df = spark.sql("""
+SELECT spp_result.BUSINESS_PARTN, spp_result.START_BB_PERIOD, spp_result.END_BB_PERIOD, dashboard.*
+FROM (
+    SELECT DISTINCT BUSINESS_PARTN, START_BB_PERIOD, END_BB_PERIOD
+    FROM prod.cds_cods.eabp_v AS a
+    WHERE a.PYMT_PLAN_TYPE='spp'
+      AND a.START_BB_PERIOD <= '2024-08-29'
+      AND a.END_BB_PERIOD > '2024-08-19'
+) AS spp
+LEFT ANTI JOIN dev.uncertified.week44_spp_weeklyreminder AS pilot
+ON spp.BUSINESS_PARTN = pilot.`Business Partner`
+) AS spp_result
+INNER JOIN common.call_volume_dashboard AS dashboard
+ON spp_result.BUSINESS_PARTN = dashboard.BUSINESS_PARTNER_ID
+""")
+
