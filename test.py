@@ -1,29 +1,43 @@
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
+# Define the date range
+start_date = '2024-08-01'  # Example start date
+end_date = '2024-08-31'    # Example end date
 
-def check_and_filter_by_closest_date(df, business_partner_column, date_column, segment_start_column):
-    # Step 1: Check uniqueness of the business partner column
-    unique_count = df.select(business_partner_column).distinct().count()
-    total_count = df.count()
-    
-    if unique_count == total_count:
-        print("Good to go: All values in the specified column are unique.")
-    else:
-        print("Warning: Some values are duplicated in the specified column.")
-    
-    # Step 2: Calculate date difference
-    df = df.withColumn("date_diff", F.datediff(F.col(date_column), F.col(segment_start_column)))
-    
-    # Step 3: Define window to find the closest date difference within each group
-    window_spec = Window.partitionBy(business_partner_column)
-    
-    # Step 4: Select the row with the minimum `date_diff` within each group
-    df = df.withColumn("selected_row", F.row_number().over(window_spec.orderBy(F.col("date_diff"))))
-    
-    # Step 5: Filter only the selected rows (keeping the row with the smallest `date_diff`)
-    closest_df = df.filter(F.col("selected_row") == 1).drop("date_diff", "selected_row")
-    
-    # Step 6: Drop duplicates, if any
-    closest_df = closest_df.dropDuplicates()
-    
-    return closest_df
+# Step 1: Filter `eabp` for active plans within the date range
+filtered_eabp = spark.sql(f"""
+    SELECT DISTINCT BUSINESS_PARTN,
+        CASE 
+            WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd') 
+            ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd') 
+        END AS END_DATE
+    FROM prod.cds_cods.eabp_v
+    WHERE PYMT_PLAN_TYPE = 'spp'
+      AND START_BB_PERIOD <= '{end_date}' 
+      AND (
+          CASE 
+              WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd')
+              ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd')
+          END
+      ) >= '{start_date}'
+""")
+
+# Step 2: Filter `week44_spp_weeklyreminder` for records active within the date range
+filtered_week44 = spark.sql(f"""
+    SELECT DISTINCT `Business Partner` AS BUSINESS_PARTNER
+    FROM dev.uncertified.week44_spp_weeklyreminder
+    WHERE to_date(`Opt-In Date`, 'MM/dd/yy hh:mm a') >= '{start_date}'
+      AND to_date(`Opt-In Date`, 'MM/dd/yy hh:mm a') <= '{end_date}'
+""")
+
+# Step 3: Combine unique Business Partners from both filtered datasets
+combined_bp = filtered_eabp.select("BUSINESS_PARTN").union(filtered_week44.select("BUSINESS_PARTNER")).distinct()
+
+# Step 4: Exclude combined Business Partners from `call_volume_dashboard`
+group3_df = spark.sql("""
+    SELECT * 
+    FROM common.call_volume_dashboard
+""").join(combined_bp, common.call_volume_dashboard.BUSINESS_PARTNER_ID == combined_bp.BUSINESS_PARTN, "left_anti")
+
+# Step 5: Drop duplicate rows from `call_volume_dashboard` after filtering
+group3_df = group3_df.dropDuplicates()
+
+group3_df.show()
