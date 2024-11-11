@@ -1,43 +1,20 @@
-# Define the date range
-start_date = '2024-08-01'  # Example start date
-end_date = '2024-08-31'    # Example end date
-
-# Step 1: Filter `eabp` for active plans within the date range
-filtered_eabp = spark.sql(f"""
-    SELECT DISTINCT BUSINESS_PARTN,
-        CASE 
-            WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd') 
-            ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd') 
-        END AS END_DATE
-    FROM prod.cds_cods.eabp_v
-    WHERE PYMT_PLAN_TYPE = 'spp'
-      AND START_BB_PERIOD <= '{end_date}' 
-      AND (
-          CASE 
-              WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd')
-              ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd')
-          END
-      ) >= '{start_date}'
-""")
-
-# Step 2: Filter `week44_spp_weeklyreminder` for records active within the date range
-filtered_week44 = spark.sql(f"""
-    SELECT DISTINCT `Business Partner` AS BUSINESS_PARTNER
-    FROM dev.uncertified.week44_spp_weeklyreminder
-    WHERE to_date(`Opt-In Date`, 'MM/dd/yy hh:mm a') >= '{start_date}'
-      AND to_date(`Opt-In Date`, 'MM/dd/yy hh:mm a') <= '{end_date}'
-""")
-
-# Step 3: Combine unique Business Partners from both filtered datasets
-combined_bp = filtered_eabp.select("BUSINESS_PARTN").union(filtered_week44.select("BUSINESS_PARTNER")).distinct()
-
-# Step 4: Exclude combined Business Partners from `call_volume_dashboard`
-group3_df = spark.sql("""
+# Group 1
+optin_df = spark.sql(f"""
+SELECT * 
+(FROM dev.uncertified.week44_spp_weeklyreminder
+          WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= '{start_date}'
+          AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}' 
+ ) AS a
+INNER JOIN (
     SELECT * 
     FROM common.call_volume_dashboard
-""").join(combined_bp, common.call_volume_dashboard.BUSINESS_PARTNER_ID == combined_bp.BUSINESS_PARTN, "left_anti")
+    WHERE to_date(SEGMENT_START, 'yyyy-MM-dd') >= to_date('{start_date}', 'yyyy-MM-dd') 
+      AND to_date(SEGMENT_STOP, 'yyyy-MM-dd') <= to_date('{end_date}', 'yyyy-MM-dd')
+      AND NODE_L3 = 'SPP ENROLL'
+) AS b
+ON a.`Business Partner` = b.BUSINESS_PARTNER_ID 
+   AND date_format(to_timestamp(a.`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= to_date(b.SEGMENT_START, 'yyyy-MM-dd')
+""")
 
-# Step 5: Drop duplicate rows from `call_volume_dashboard` after filtering
-group3_df = group3_df.dropDuplicates()
-
-group3_df.show()
+print(optin_df.select("Business Partner").distinct().count())
+optin_df.display()
