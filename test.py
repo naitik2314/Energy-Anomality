@@ -20,11 +20,13 @@ def check_and_filter_by_closest_date(df, business_partner_column, date_column, s
     # Step 3: Define window specification to find minimum date_diff within each business_partner group
     window_spec = Window.partitionBy(business_partner_column)
     
-    # Step 4: Filter to keep only rows with the minimum `date_diff` in each group
-    min_date_diff = F.min("date_diff").over(window_spec)
-    closest_df = df.filter(F.col("date_diff") == min_date_diff).drop("date_diff")
+    # Step 4: Add a column with the minimum date_diff within each group
+    df = df.withColumn("min_date_diff", F.min("date_diff").over(window_spec))
     
-    # Step 5: Drop duplicates if any (optional safeguard)
+    # Step 5: Filter to keep only rows where date_diff is equal to min_date_diff in each group
+    closest_df = df.filter(F.col("date_diff") == F.col("min_date_diff")).drop("date_diff", "min_date_diff")
+    
+    # Step 6: Drop duplicates if any (optional safeguard)
     closest_df = closest_df.dropDuplicates()
     
     return closest_df
