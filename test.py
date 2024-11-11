@@ -1,40 +1,20 @@
-# Step 1: Define `excluded_bps` and register as a temporary view
-excluded_bps = spark.sql(f"""
-SELECT DISTINCT `Business Partner` AS BUSINESS_PARTN
-FROM dev.uncertified.week44_spp_weeklyreminder
-WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= '{start_date}'
-  AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}'
-""")
-excluded_bps.createOrReplaceTempView("excluded_bps")
+# Get unique business partners from `optin_df` and `group2_df`
+optin_bps = optin_df.select("Business Partner").distinct()
+group2_bps = group2_df.select("BUSINESS_PARTN").distinct()
 
-# Step 2: Define `filtered_spp` and perform LEFT ANTI JOIN with `excluded_bps`
-group2_df = spark.sql(f"""
-WITH filtered_spp AS (
-    SELECT DISTINCT BUSINESS_PARTN, START_BB_PERIOD,
-        CASE 
-            WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd') 
-            ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd') 
-        END AS END_DATE
-    FROM prod.cds_cods.eabp_v
-    WHERE PYMT_PLAN_TYPE = 'SPP'
-      AND to_date(START_BB_PERIOD, 'yyyy-MM-dd') <= '{end_date}'
-      AND (CASE WHEN DEACTIVATED IS NOT NULL THEN to_date(CHANGED_ON, 'yyyy-MM-dd') ELSE to_date(END_BB_PERIOD, 'yyyy-MM-dd') END) >= '{start_date}'
-)
+# Combine the unique business partners from both DataFrames
+combined_bps = optin_bps.union(group2_bps).distinct()
+combined_bps.createOrReplaceTempView("combined_bps")
 
-SELECT spp.BUSINESS_PARTN, spp.START_BB_PERIOD, spp.END_DATE, dashboard.*
-FROM filtered_spp AS spp
-LEFT ANTI JOIN excluded_bps AS pilot
-ON spp.BUSINESS_PARTN = pilot.BUSINESS_PARTN
-INNER JOIN (
-    SELECT * 
-    FROM common.call_volume_dashboard
-    WHERE to_date(SEGMENT_START, 'yyyy-MM-dd') >= '{start_date}' 
-      AND to_date(SEGMENT_STOP, 'yyyy-MM-dd') <= '{end_date}'
-      AND NODE_L3 = 'SPP ENROLL'
-) AS dashboard
-ON spp.BUSINESS_PARTN = dashboard.BUSINESS_PARTNER_ID
-  AND spp.START_BB_PERIOD >= dashboard.SEGMENT_START
+group3_df = spark.sql(f"""
+SELECT dashboard.BUSINESS_PARTNER_ID, dashboard.SEGMENT_START, dashboard.SEGMENT_STOP, dashboard.NODE_L3, dashboard.HANDLED_TIME
+FROM common.call_volume_dashboard AS dashboard
+LEFT ANTI JOIN combined_bps
+ON dashboard.BUSINESS_PARTNER_ID = combined_bps.`Business Partner`
+WHERE to_date(dashboard.SEGMENT_START, 'yyyy-MM-dd') >= '{start_date}' 
+  AND to_date(dashboard.SEGMENT_STOP, 'yyyy-MM-dd') <= '{end_date}'
+  AND dashboard.NODE_L3 = 'SPP ENROLL'
 """)
 
-# Display the final DataFrame
-group2_df.display()
+# Display the final result
+group3_df.display()
