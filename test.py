@@ -1,152 +1,189 @@
-# Variables
-start_window = pd.to_datetime('2024-08-19')
-end_window = pd.to_datetime('2024-09-29')
+import pyspark
+import json
+from pyspark.sql.types import *
+import pandas as pd
+import os
+import datetime
+import time 
+import pyspark.sql.functions as f
+from typing import List
+from datetime import timedelta
+from datetime import datetime
+import numpy as np
+spark.sql("set spark.sql.legacy.timeParserPolicy=LEGACY")
 
-input_file = "SPP Pilot - Enrollment Data for AHT.xlsx"
-sheet_name = "Master List"
-output_file = "SPP_CA.csv"
-column_name = "Contract Account"
-BMD = '//Nas1/CS Analytics/C2A_Prod/BMD.parquet'
+dbutils.widgets.text("start_date", "")
+dbutils.widgets.text("end_date", "")
 
-# We are using this cell in the main input cell
-def business_partner_join(BMD, input_file, output_file, sheet_name):
-    df = (pd.read_excel(input_file, sheet_name=sheet_name, engine="openpyxl", dtype={'Contract Account': 'string'})).rename(columns={'Contract Account': 'contract_account'}).merge(
-        (pd.read_parquet(BMD, columns=['business_partner', 'contract_account'])).astype(str),
-    on = 'contract_account',
-    how = 'left')
-    
-    df.to_csv(output_file)
+start_date_str = dbutils.widgets.get("start_date")
+end_date_str = dbutils.widgets.get("end_date")
 
-business_partner_join(BMD, input_file, output_file, sheet_name)
+if start_date_str == "" or end_date_str == "":
+  # If the widgets are empty, we want the current date time and get the previous week range
+  today = datetime.now() # Get the current date time
+  last_week_start = today - timedelta(days=today.weekday() + 7) # Returns Last Monday
+  last_week_end = last_week_start + timedelta(days=6) # Last Sunday
 
-call_volume = (
-    pd.read_parquet('//Nas1/CS Analytics/C2A_Prod/FULL_CALL_VOLUME_DASHBOARD.parquet', columns=['segment_start', 'business_partner_id', 'segment_stop', 'vendor', 'username', 'call_id', 'ucid', 'media_id', 'handled_time', 'contract_account', 'prorated_call_new', 'node_l2', 'node_l3'])
-    .assign(segment_start = lambda df: pd.to_datetime(df['segment_start']),
-            segment_stop = lambda df: pd.to_datetime(df['segment_stop']))
-    .rename(columns={'call_id': 'CALL_ID', 'media_id': 'MEDIA_ID', 'business_partner_id': 'business_partner'})
-    .query("segment_start >= '2024-08-19' and segment_stop <= '2024-09-29'") #change this to the variables
-    .query("node_l2 == 'SPP'")
-    .dropna(subset=['contract_account'])
-    .drop_duplicates()
-)
+  start_date = last_week_start.strftime("%Y-%m-%d")
+  end_date = last_week_end.strftime("%Y-%m-%d")
 
-call_volume['business_partner'] = call_volume['business_partner'].astype(str)
-call_volume['contract_account'] = call_volume['contract_account'].astype(str)
+else:
+  # If the widgets are not empty, then
+  start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+  end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
 
-spp_pilot_contract_accounts = (
-    pd.read_csv(output_file, dtype={'business_partner': 'string', 'contract_account': 'string'}).rename(columns={'business_partner': 'pilot_business_partner', 'contract_account': 'pilot_contract_account'})[['pilot_business_partner', 'pilot_contract_account']].drop_duplicates()
-)
-
-spp_pilot = (
-    pd.read_csv(output_file, dtype={'business_partner': 'string', 'contract_account': 'string'}).rename(columns={'Opt-In Date': 'pilot_start_date'})[['business_partner', 'pilot_start_date', 'contract_account', 'Plan Created by']].drop_duplicates()
-    .assign(
-        pilot_start_date=lambda x: pd.to_datetime(x['pilot_start_date']),
-    )
-    .assign(
-        pilot_start_date_only=lambda x: x['pilot_start_date'].dt.date
-    )
-)
-
-spp_enrolled = (
-    pd.read_parquet('//Nas1/CS Analytics/C2A_Prod/PAYMENT_PLANS.parquet', columns=['contract_account', 'payment_plan_type', 'business_partner'])
-    .query("payment_plan_type == 'SPP'")
-    .merge(
-        pd.read_parquet('//Nas1/CS Analytics/C2A_Prod/INSTALLMENT_PLANS.parquet', columns=['deactivation_date', 'plan_start_date', 'plan_end_date', 'contract_account', 'business_partner']), on = ['contract_account', 'business_partner'], how = 'inner'
-    )
-    .drop_duplicates()
-)
+print(f"Using Start Date: {start_date} and End Date:{end_date}, dtypes: Start Date: {type(start_date)} and {type(end_date)}")
 
 # Group 1
-spp_pitch_calls_pilot_accepted = spp_pilot.merge(
-    call_volume,
-    on = 'business_partner',
-    how = 'inner'
+optin_df = spark.sql(f"""
+SELECT * 
+FROM (
+  SELECT *
+  FROM dev.uncertified.week44_spp_weeklyreminder
+          WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= '{start_date}'
+          AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}' 
+ ) AS a
+INNER JOIN (
+    SELECT * 
+    FROM common.call_volume_dashboard
+    WHERE to_date(SEGMENT_START, 'yyyy-MM-dd') >= to_date('{start_date}', 'yyyy-MM-dd') 
+      AND to_date(SEGMENT_STOP, 'yyyy-MM-dd') < to_date('{end_date}', 'yyyy-MM-dd')
+      AND NODE_L3 = 'SPP ENROLL'
+) AS b
+ON a.`Business Partner` = b.BUSINESS_PARTNER_ID 
+   AND date_format(to_timestamp(a.`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= to_date(b.SEGMENT_START, 'yyyy-MM-dd')
+""")
+
+print(optin_df.select("Business Partner").distinct().count())
+optin_df.display()
+
+group2_df = spark.sql(f"""
+WITH filtered_spp AS (
+    SELECT DISTINCT BUSINESS_PARTN, START_BB_PERIOD,
+        CASE 
+            WHEN a.DEACTIVATED IS NOT NULL THEN to_date(a.CHANGED_ON, 'yyyy-MM-dd') 
+            ELSE to_date(a.END_BB_PERIOD, 'yyyy-MM-dd') 
+        END AS END_DATE
+    FROM prod.cds_cods.eabp_v AS a
+    WHERE a.PYMT_PLAN_TYPE = 'SPP'
+      AND to_date(a.START_BB_PERIOD, 'yyyy-MM-dd') <= '{end_date}'
+      AND (
+          CASE 
+              WHEN a.DEACTIVATED IS NOT NULL THEN to_date(a.CHANGED_ON, 'yyyy-MM-dd') 
+              ELSE to_date(a.END_BB_PERIOD, 'yyyy-MM-dd') 
+          END
+      ) >= '{start_date}'
+),
+
+excluded_bps AS (
+    SELECT DISTINCT `Business Partner` AS BUSINESS_PARTN
+    FROM dev.uncertified.week44_spp_weeklyreminder
+        WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= '{start_date}'
+        AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}'
 )
 
-spp_pitch_calls_pilot_accepted = spp_pitch_calls_pilot_accepted.loc[
-    spp_pitch_calls_pilot_accepted['pilot_start_date'] >= spp_pitch_calls_pilot_accepted['segment_start']
-].drop_duplicates()
+SELECT spp.BUSINESS_PARTN, spp.START_BB_PERIOD, spp.END_DATE, dashboard.*
+FROM filtered_spp AS spp
+LEFT ANTI JOIN excluded_bps AS pilot
+ON spp.BUSINESS_PARTN = pilot.BUSINESS_PARTN
+INNER JOIN common.call_volume_dashboard AS dashboard
+ON spp.BUSINESS_PARTN = dashboard.BUSINESS_PARTNER_ID
+  AND spp.START_BB_PERIOD >= dashboard.SEGMENT_START
+WHERE to_date(dashboard.SEGMENT_START, 'yyyy-MM-dd') >= '{start_date}' 
+AND to_date(dashboard.SEGMENT_STOP, 'yyyy-MM-dd') <= '{end_date}'
+AND dashboard.NODE_L3 = 'SPP ENROLL'
+""")
 
-# Group 2
-spp_enrolled_not_pilot = spp_enrolled.assign(
-    effective_end_date = spp_enrolled['deactivation_date'].fillna(spp_enrolled['plan_end_date'])
-).query(
-    "(plan_start_date <= @end_window) & (effective_end_date >= @start_window)"
-).loc[
-    ~spp_enrolled['business_partner'].isin(spp_pilot_contract_accounts['pilot_business_partner'])
-].drop(
-    columns = ['deactivation_date', 'plan_end_date', 'effective_end_date', 'payment_plan_type']
-)
-
-spp_pitch_calls = spp_enrolled_not_pilot.merge(
-    call_volume,
-    on = 'business_partner',
-    how = 'inner'
-)
-
-spp_pitch_calls = spp_pitch_calls.loc[
-    spp_pitch_calls['plan_start_date'] >= spp_pitch_calls['segment_start']
-].drop_duplicates()
+group2_df.display()
 
 # Group 3
-spp_combined_accounts = pd.concat([
-    spp_pilot['business_partner'], 
-    spp_enrolled_not_pilot['business_partner']
-]).drop_duplicates()
+group3_df = spark.sql(f"""
+WITH combined_bp AS (
+  SELECT DISTINCT BUSINESS_PARTN
+  FROM (
+    SELECT BUSINESS_PARTN,
+      CASE
+        WHEN a.DEACTIVATED IS NOT NULL THEN to_date(a.CHANGED_ON, 'yyyy-MM-dd')
+        ELSE to_date(a.END_BB_PERIOD, 'yyyy-MM-dd')
+      END AS END_DATE
+    FROM prod.cds_cods.eabp_v AS a
+    WHERE a.PYMT_PLAN_TYPE = 'SPP'
+      AND to_date(a.START_BB_PERIOD, 'yyyy-MM-dd') <= '{end_date}'
+      AND (
+          CASE
+            WHEN a.DEACTIVATED IS NOT NULL THEN to_date(a.CHANGED_ON, 'yyyy-MM-dd')
+            ELSE to_date(a.END_BB_PERIOD, 'yyyy-MM-dd')
+          END
+        ) > '{start_date}'
+    UNION
+      SELECT `Business Partner` AS BUSINESS_PARTN,
+        NULL AS END_DATE --Place holder to match column count
+      FROM dev.uncertified.week44_spp_weeklyreminder
+        WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') >= '{start_date}'
+        AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}'
+  )
+)
+  SELECT dashboard.BUSINESS_PARTNER_ID, dashboard.UCID, dashboard.prorated_call_new, dashboard.NODE_L3, dashboard.HANDLED_TIME
+    FROM common.call_volume_dashboard AS dashboard
+    LEFT ANTI JOIN combined_bp
+    ON dashboard.BUSINESS_PARTNER_ID = combined_bp.BUSINESS_PARTN
+    WHERE to_date(dashboard.SEGMENT_START, 'yyyy-MM-dd') >= '{start_date}' 
+      AND to_date(dashboard.SEGMENT_STOP, 'yyyy-MM-dd') <= '{end_date}'
+      AND dashboard.NODE_L3 = 'SPP ENROLL'
+                      """)
+group3_df = group3_df.dropDuplicates()
+group3_df.display()
 
-accounts_not_in_spp = call_volume[
-    ~call_volume['business_partner'].isin(spp_combined_accounts)
-]
-accounts_not_in_spp = accounts_not_in_spp.drop_duplicates()
-print("Business Partner present in call volume but not in SPP Pilot or SPP Enrolled stored")
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
-def check_and_filter_by_closest_date(df, business_partner_column, date_column, segment_start_column, node_column):
-    if df[business_partner_column].nunique() == df.shape[0]:
+def check_and_filter_by_closest_date(df, business_partner_column, date_column, segment_start_column):
+    # Step 1: Check uniqueness of the business partner column
+    unique_count = df.select(business_partner_column).distinct().count()
+    total_count = df.count()
+    
+    if unique_count == total_count:
         print("Good to go: All values in the specified column are unique.")
     else:
         print("Warning: Some values are duplicated in the specified column.")
-    df['date_diff'] = (df[date_column] - df[segment_start_column])
     
-    def get_closest_row(group):
-        if len(group) == 1:
-            return group.iloc[0]
-        
-        spp_enroll_rows = group[group[node_column] == 'SPP ENROLL']
-        
-        if len(spp_enroll_rows) == len(group):
-            return spp_enroll_rows.loc[spp_enroll_rows['date_diff'].idxmin()]
-        
-        if not spp_enroll_rows.empty:
-            return spp_enroll_rows.loc[spp_enroll_rows['date_diff'].idxmin()]
-        
-        return group.loc[group['date_diff'].idxmin()]
+    # Step 2: Calculate date difference
+    df = df.withColumn("date_diff", F.datediff(F.col(date_column), F.col(segment_start_column)))
     
-    closest_df = df.groupby(business_partner_column).apply(get_closest_row).reset_index(drop=True)
-    closest_df = closest_df.drop(columns=['date_diff'])
-    closest_df = closest_df.drop_duplicates()
+    # Step 3: Define window to find the closest date difference within each group
+    window_spec = Window.partitionBy(business_partner_column)
+    
+    # Step 4: Select the row with the minimum `date_diff` within each group
+    df = df.withColumn("selected_row", F.row_number().over(window_spec.orderBy(F.col("date_diff"))))
+    
+    # Step 5: Filter only the selected rows (keeping the row with the smallest `date_diff`)
+    closest_df = df.filter(F.col("selected_row") == 1).drop("date_diff", "selected_row")
+    
+    # Step 6: Drop duplicates, if any
+    closest_df = closest_df.dropDuplicates()
     
     return closest_df
 
+# Calculating AHT
 def calculate_average_handle_time(df, handle_time_column):
-    total_handle_time = df[handle_time_column].sum()
-    total_prorated = df['prorated_call_new'].sum()
-    average_handle_time = total_handle_time / total_prorated 
-    return total_handle_time, average_handle_time
+  total_handle_time = df.agg(f.sum(handle_time_column)).first()[0]
+  total_prorated = df.agg(f.sum("prorated_call_new")).first()[0]
 
-# df_filtered = check_and_filter_by_closest_date(call_volume, 'contract_account', 'plan_start_date', 'segment_start')
-# avg_handle_time = calculate_average_handle_time(call_volume, 'handle_time')
+  average_handle_time = total_handle_time / total_prorated if total_prorated != 0 else 0
 
-# Group 1 value calculation
-group1_filtered = check_and_filter_by_closest_date(spp_pitch_calls_pilot_accepted, 'business_partner', 'pilot_start_date', 'segment_start', 'node_l3')
-group1_handle_time, group1_avg_handle_time = calculate_average_handle_time(group1_filtered, 'handled_time')
-print(f"Total handle time: {group1_handle_time} and Total number of calls: {group1_filtered.shape[0]} and Avg Handle Time: {group1_avg_handle_time}")
+  return total_handle_time, average_handle_time
 
-# Group 2 value calculation
-group2_filtered = check_and_filter_by_closest_date(spp_pitch_calls, 'business_partner', 'plan_start_date', 'segment_start', 'node_l3')
-group2_handle_time, group2_avg_handle_time = calculate_average_handle_time(group2_filtered, 'handled_time')
-print(f"Total handle time: {group2_handle_time} and Total number of calls: {group2_filtered.shape[0]} and Avg Handle Time: {group2_avg_handle_time}")
+# Getting the values
+group2_df_filtered = check_and_filter_by_closest_date(group2_df, 'BUSINESS_PARTN', 'START_BB_PERIOD', 'SEGMENT_START')
+group2_handle_time, group2_avg_handle_time = calculate_average_handle_time(group2_df_filtered, 'HANDLED_TIME')
+print(f"Total handle time: {group2_handle_time} and Total number of calls: {group2_df_filtered.count()} and Avg Handle Time: {group2_avg_handle_time}")
 
-# Group 3 value calculation
-accounts_not_in_spp = accounts_not_in_spp[accounts_not_in_spp['node_l3'] == 'SPP ENROLL']
-group3_handle_time, group3_avg_handle_time = calculate_average_handle_time(accounts_not_in_spp, 'handled_time')
-print(f"Total handle time: {group3_handle_time} and Total number of calls: {accounts_not_in_spp.shape[0]} and Avg Handle Time: {group3_avg_handle_time}")
+# Getting the values
+optin_df = optin_df.withColumn("OptIn_Date_Parsed", F.to_timestamp("Opt-In Date", "MM/dd/yy hh:mm a"))
+optin_df_filtered = check_and_filter_by_closest_date(optin_df, 'Business Partner', 'OptIn_Date_Parsed', 'SEGMENT_START')
+group1_handle_time, group1_avg_handle_time = calculate_average_handle_time(optin_df_filtered, 'HANDLED_TIME')
+print(f"Total handle time: {group1_handle_time} and Total number of calls: {optin_df_filtered.count()} and Avg Handle Time: {group1_avg_handle_time}")
+
+# Getting the values
+group3_handle_time, group3_avg_handle_time = calculate_average_handle_time(group3_df, 'HANDLED_TIME')
+print(f"Total handle time: {group3_handle_time} and Total number of calls: {group3_df.count()} and Avg Handle Time: {group3_avg_handle_time}")
