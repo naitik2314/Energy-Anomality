@@ -1,3 +1,4 @@
+# Define `excluded_bps` DataFrame and register as a temporary view
 excluded_bps = spark.sql(f"""
 SELECT DISTINCT `Business Partner` AS BUSINESS_PARTN
 FROM dev.uncertified.week44_spp_weeklyreminder
@@ -5,6 +6,10 @@ WHERE date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd')
   AND date_format(to_timestamp(`Opt-In Date`, 'MM/dd/yy hh:mm a'), 'yyyy-MM-dd') <= '{end_date}'
 """)
 
+# Register `excluded_bps` as a temporary view so it can be referenced in `group2_df`
+excluded_bps.createOrReplaceTempView("excluded_bps")
+
+# Now `group2_df` can reference `excluded_bps` in the query
 group2_df = spark.sql(f"""
 WITH filtered_spp AS (
     SELECT DISTINCT BUSINESS_PARTN, START_BB_PERIOD,
@@ -22,4 +27,5 @@ FROM filtered_spp AS spp
 LEFT ANTI JOIN excluded_bps AS pilot
 ON spp.BUSINESS_PARTN = pilot.BUSINESS_PARTN
 """)
+
 group2_df.display()
