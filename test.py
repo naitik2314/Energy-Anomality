@@ -11,12 +11,11 @@ def check_and_filter_by_closest_date(df, business_partner_column, date_column, s
     else:
         print("Warning: Some values are duplicated in the specified column.")
     
-    # Step 2: Calculate date difference only for rows where date_column > segment_start_column
+    # Step 2: Filter rows where date_column > segment_start_column
     df = df.filter(F.col(date_column) > F.col(segment_start_column))
     
-    # Calculate date_diff with null handling
-    df = df.withColumn("date_diff", F.datediff(F.coalesce(F.col(date_column), F.lit(0)), 
-                                               F.coalesce(F.col(segment_start_column), F.lit(0))))
+    # Calculate date difference
+    df = df.withColumn("date_diff", F.datediff(F.col(date_column), F.col(segment_start_column)))
     
     # Step 3: Define window specification to find minimum date_diff within each business_partner group
     window_spec = Window.partitionBy(business_partner_column)
