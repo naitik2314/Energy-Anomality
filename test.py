@@ -1,20 +1,31 @@
-# Get unique business partners from `optin_df` and `group2_df`
-optin_bps = optin_df.select("Business Partner").distinct()
-group2_bps = group2_df.select("BUSINESS_PARTN").distinct()
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
-# Combine the unique business partners from both DataFrames
-combined_bps = optin_bps.union(group2_bps).distinct()
-combined_bps.createOrReplaceTempView("combined_bps")
-
-group3_df = spark.sql(f"""
-SELECT dashboard.BUSINESS_PARTNER_ID, dashboard.SEGMENT_START, dashboard.SEGMENT_STOP, dashboard.NODE_L3, dashboard.HANDLED_TIME
-FROM common.call_volume_dashboard AS dashboard
-LEFT ANTI JOIN combined_bps
-ON dashboard.BUSINESS_PARTNER_ID = combined_bps.`Business Partner`
-WHERE to_date(dashboard.SEGMENT_START, 'yyyy-MM-dd') >= '{start_date}' 
-  AND to_date(dashboard.SEGMENT_STOP, 'yyyy-MM-dd') <= '{end_date}'
-  AND dashboard.NODE_L3 = 'SPP ENROLL'
-""")
-
-# Display the final result
-group3_df.display()
+def check_and_filter_by_closest_date(df, business_partner_column, date_column, segment_start_column):
+    # Step 1: Check uniqueness of the business partner column
+    unique_count = df.select(business_partner_column).distinct().count()
+    total_count = df.count()
+    
+    if unique_count == total_count:
+        print("Good to go: All values in the specified column are unique.")
+    else:
+        print("Warning: Some values are duplicated in the specified column.")
+    
+    # Step 2: Calculate date difference only for rows where date_column > segment_start_column
+    df = df.filter(F.col(date_column) > F.col(segment_start_column))
+    
+    # Calculate date_diff with null handling
+    df = df.withColumn("date_diff", F.datediff(F.coalesce(F.col(date_column), F.lit(0)), 
+                                               F.coalesce(F.col(segment_start_column), F.lit(0))))
+    
+    # Step 3: Define window specification to find minimum date_diff within each business_partner group
+    window_spec = Window.partitionBy(business_partner_column)
+    
+    # Step 4: Filter to keep only rows with the minimum `date_diff` in each group
+    min_date_diff = F.min("date_diff").over(window_spec)
+    closest_df = df.filter(F.col("date_diff") == min_date_diff).drop("date_diff")
+    
+    # Step 5: Drop duplicates if any (optional safeguard)
+    closest_df = closest_df.dropDuplicates()
+    
+    return closest_df
