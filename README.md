@@ -52,3 +52,30 @@ The implementation leverages LSTM's ability to capture long-term dependencies in
 1. **Clone the Repository**:
    ```bash
    git clone https://github.com/your-username/energy-anomaly-detection.git
+
+## Run the Notebook
+Open the Jupyter notebook `energy_fraud.ipynb` to explore the analysis and model training process.
+
+---
+
+## Visualize Results
+View anomaly detection outputs to understand how the model identifies irregularities.
+
+---
+
+## Results
+The LSTM-based anomaly detection model successfully identifies abnormal energy consumption patterns with high precision and recall, demonstrating its potential for deployment in real-world energy systems.
+
+---
+
+## Future Enhancements
+- Incorporate **real-time anomaly detection** using streaming data pipelines (e.g., Apache Kafka).
+- Expand the dataset to include broader features such as weather conditions and user demographics.
+- Experiment with **autoencoder-based models** for comparative analysis.
+- Integrate into a **visualization dashboard** for operational use.
+
+---
+
+## Contributing
+Contributions are welcome! Feel free to submit issues or pull requests for bug fixes or enhancements.
+
