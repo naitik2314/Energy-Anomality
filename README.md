@@ -51,7 +51,7 @@ The implementation leverages LSTM's ability to capture long-term dependencies in
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/your-username/energy-anomaly-detection.git
+   git clone https://github.com/naitik2314/Energy-Anomality.git
 
 ## Run the Notebook
 Open the Jupyter notebook `energy_fraud.ipynb` to explore the analysis and model training process.
